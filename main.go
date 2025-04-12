@@ -29,6 +29,11 @@ func init() {
 			description: "Displays location areas in Pokemon World",
 			callback:    commandMap,
 		},
+		"mapb": {
+			name:        "mapb",
+			description: "Displays previous location areas in Pokemon World",
+			callback:    commandMapBack,
+		},
 	}
 }
 
@@ -91,6 +96,31 @@ type locationAreaData struct {
 	Url  string `json:"url"`
 }
 
+// Map back command
+func commandMapBack(config *config) error {
+	if config.previous == "" {
+		fmt.Println("You are on the first page")
+		return nil
+	} else {
+		// Make Api Call
+		responseData, err := makeGetApiCall[locationAreaResponse](config.previous)
+		if err != nil {
+			return err
+		}
+
+		// Update next and previous
+		config.next = responseData.Next
+		config.previous = responseData.Previous
+
+		// Print out the results
+		for _, locationArea := range responseData.Results {
+			fmt.Println(locationArea.Name)
+		}
+
+		return nil
+	}
+}
+
 // Map Command
 func commandMap(config *config) error {
 	fullLocationAreaUrl := BaseUrl + EndpointLocationArea
@@ -103,19 +133,10 @@ func commandMap(config *config) error {
 		/// After first page has been displayed
 		urlToCall = config.next
 	}
-	// TODO: - implement for previous
 
-	// Get
-	res, err := http.Get(urlToCall)
+	// Make Api Call
+	responseData, err := makeGetApiCall[locationAreaResponse](urlToCall)
 	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-
-	// Decode Json
-	decoder := json.NewDecoder(res.Body)
-	var responseData locationAreaResponse
-	if err := decoder.Decode(&responseData); err != nil {
 		return err
 	}
 
@@ -123,11 +144,30 @@ func commandMap(config *config) error {
 	config.next = responseData.Next
 	config.previous = responseData.Previous
 
+	// Print out the results
 	for _, locationArea := range responseData.Results {
 		fmt.Println(locationArea.Name)
 	}
 
 	return nil
+}
+
+// Generic function to make Get API Call
+func makeGetApiCall[T any](urlToCall string) (T, error) {
+	res, err := http.Get(urlToCall)
+	if err != nil {
+		return *new(T), fmt.Errorf("failed to fetch api %w", err)
+	}
+	defer res.Body.Close()
+
+	// Decode Json
+	decoder := json.NewDecoder(res.Body)
+	var responseData T
+	if err := decoder.Decode(&responseData); err != nil {
+		return *new(T), fmt.Errorf("failed to decode json %w", err)
+	}
+
+	return responseData, nil
 }
 
 // Exit Command
