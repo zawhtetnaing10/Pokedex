@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/zawhtetnaing10/Pokedex/internal/pokecache"
 )
 
 // Supported commands
@@ -46,6 +49,9 @@ func main() {
 		previous: "",
 	}
 
+	// Cache
+	pokecache := pokecache.NewCache(5 * time.Second)
+
 	for {
 		fmt.Print("Pokedex >")
 
@@ -61,7 +67,7 @@ func main() {
 				cliCommand, ok := supportedCommands[inputCommand]
 
 				if ok {
-					err := cliCommand.callback(&initialConfig)
+					err := cliCommand.callback(&initialConfig, pokecache)
 					if err != nil {
 						fmt.Println("Error:", err)
 					}
@@ -81,7 +87,7 @@ type config struct {
 type cliCommand struct {
 	name        string
 	description string
-	callback    func(config *config) error
+	callback    func(config *config, cache *pokecache.Cache) error
 }
 
 type locationAreaResponse struct {
@@ -97,13 +103,13 @@ type locationAreaData struct {
 }
 
 // Map back command
-func commandMapBack(config *config) error {
+func commandMapBack(config *config, cache *pokecache.Cache) error {
 	if config.previous == "" {
 		fmt.Println("You are on the first page")
 		return nil
 	} else {
 		// Make Api Call
-		responseData, err := makeGetApiCall[locationAreaResponse](config.previous)
+		responseData, err := getResponseFromRepo(config.previous, cache)
 		if err != nil {
 			return err
 		}
@@ -122,7 +128,7 @@ func commandMapBack(config *config) error {
 }
 
 // Map Command
-func commandMap(config *config) error {
+func commandMap(config *config, cache *pokecache.Cache) error {
 	fullLocationAreaUrl := BaseUrl + EndpointLocationArea
 
 	var urlToCall string
@@ -134,8 +140,8 @@ func commandMap(config *config) error {
 		urlToCall = config.next
 	}
 
-	// Make Api Call
-	responseData, err := makeGetApiCall[locationAreaResponse](urlToCall)
+	// Get from cache or from api.
+	responseData, err := getResponseFromRepo(urlToCall, cache)
 	if err != nil {
 		return err
 	}
@@ -152,8 +158,54 @@ func commandMap(config *config) error {
 	return nil
 }
 
+// Checks if the resource is in the cache, if not make an api call and update the cache
+func getResponseFromRepo(url string, cache *pokecache.Cache) (locationAreaResponse, error) {
+	// Accesses Cache
+	responseDataFromCache, found, err := findResponseFromCache(url, cache)
+	if err != nil {
+		return locationAreaResponse{}, fmt.Errorf("cached data may be corrupted. it cannot be parsed %w", err)
+	}
+
+	if found {
+		// Cache Exists
+		return responseDataFromCache, nil
+	} else {
+		// Make Api Call
+		responseDataFromApi, err := makeGetApiCall[locationAreaResponse](url)
+		if err != nil {
+			return locationAreaResponse{}, fmt.Errorf("error making api call %w", err)
+		}
+
+		// Update cache
+		cacheBytes, err := json.Marshal(responseDataFromApi)
+		if err != nil {
+			return locationAreaResponse{}, fmt.Errorf("error marshalling network response %w", err)
+		}
+		cache.Add(url, cacheBytes)
+
+		// Returns the api response
+		return responseDataFromApi, nil
+	}
+}
+
+// Checks if the resource already exists with the url
+func findResponseFromCache(url string, cache *pokecache.Cache) (locationAreaResponse, bool, error) {
+	cachedValue, found := cache.Get(url)
+	if found {
+		var cachedResponse locationAreaResponse
+		err := json.Unmarshal(cachedValue, &cachedResponse)
+		if err != nil {
+			return locationAreaResponse{}, false, fmt.Errorf("error unmarshalling cached data %w", err)
+		} else {
+			return cachedResponse, found, nil
+		}
+	}
+	return locationAreaResponse{}, false, nil
+}
+
 // Generic function to make Get API Call
 func makeGetApiCall[T any](urlToCall string) (T, error) {
+	// Make Get Api Call
 	res, err := http.Get(urlToCall)
 	if err != nil {
 		return *new(T), fmt.Errorf("failed to fetch api %w", err)
@@ -171,14 +223,14 @@ func makeGetApiCall[T any](urlToCall string) (T, error) {
 }
 
 // Exit Command
-func commandExit(config *config) error {
+func commandExit(config *config, cache *pokecache.Cache) error {
 	fmt.Println("Closing the Pokedex... Goodbye!")
 	os.Exit(0)
 	return nil
 }
 
 // Help Command
-func commandHelp(config *config) error {
+func commandHelp(config *config, cache *pokecache.Cache) error {
 	helpMessage := "Welcome to the Pokedex!\nUsage:\n\n"
 
 	for key, value := range supportedCommands {
