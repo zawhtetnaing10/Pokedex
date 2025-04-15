@@ -37,6 +37,11 @@ func init() {
 			description: "Displays previous location areas in Pokemon World",
 			callback:    commandMapBack,
 		},
+		"explore": {
+			name:        "explore",
+			description: "Displays pokemon in the location area",
+			callback:    commandExplore,
+		},
 	}
 }
 
@@ -62,12 +67,19 @@ func main() {
 			cleanedWords := cleanInput(input)
 
 			if len(cleanedWords) > 0 {
+				// Command
 				inputCommand := cleanedWords[0]
+
+				// First arg exists
+				var firstArg string
+				if len(cleanedWords) >= 2 {
+					firstArg = cleanedWords[1]
+				}
 
 				cliCommand, ok := supportedCommands[inputCommand]
 
 				if ok {
-					err := cliCommand.callback(&initialConfig, pokecache)
+					err := cliCommand.callback(&initialConfig, pokecache, firstArg)
 					if err != nil {
 						fmt.Println("Error:", err)
 					}
@@ -87,7 +99,7 @@ type config struct {
 type cliCommand struct {
 	name        string
 	description string
-	callback    func(config *config, cache *pokecache.Cache) error
+	callback    func(config *config, cache *pokecache.Cache, firstArg string) error
 }
 
 type locationAreaResponse struct {
@@ -102,14 +114,47 @@ type locationAreaData struct {
 	Url  string `json:"url"`
 }
 
+type locationAreaWithPokemon struct {
+	PokemonEncounters []pokemonEncounters `json:"pokemon_encounters"`
+}
+
+type pokemonEncounters struct {
+	Pokemon pokemon `json:"pokemon"`
+}
+
+type pokemon struct {
+	Name           string `json:"name"`
+	Url            string `json:"url"`
+	BaseExperience int    `json:"base_experience"`
+}
+
+// Explore command
+func commandExplore(config *config, cache *pokecache.Cache, firstArg string) error {
+	fmt.Printf("Exploring %v...\n", firstArg)
+	fmt.Println("Found Pokemon:")
+
+	fullPokemonListUrl := BaseUrl + EndpointLocationArea + "/" + firstArg
+
+	response, err := getResponseFromRepo[locationAreaWithPokemon](fullPokemonListUrl, cache)
+	if err != nil {
+		return err
+	}
+
+	for _, pokemonDetails := range response.PokemonEncounters {
+		fmt.Printf("%v\n", pokemonDetails.Pokemon.Name)
+	}
+
+	return nil
+}
+
 // Map back command
-func commandMapBack(config *config, cache *pokecache.Cache) error {
+func commandMapBack(config *config, cache *pokecache.Cache, firstArg string) error {
 	if config.previous == "" {
 		fmt.Println("You are on the first page")
 		return nil
 	} else {
 		// Make Api Call
-		responseData, err := getResponseFromRepo(config.previous, cache)
+		responseData, err := getResponseFromRepo[locationAreaResponse](config.previous, cache)
 		if err != nil {
 			return err
 		}
@@ -128,7 +173,7 @@ func commandMapBack(config *config, cache *pokecache.Cache) error {
 }
 
 // Map Command
-func commandMap(config *config, cache *pokecache.Cache) error {
+func commandMap(config *config, cache *pokecache.Cache, firstArg string) error {
 	fullLocationAreaUrl := BaseUrl + EndpointLocationArea
 
 	var urlToCall string
@@ -141,7 +186,7 @@ func commandMap(config *config, cache *pokecache.Cache) error {
 	}
 
 	// Get from cache or from api.
-	responseData, err := getResponseFromRepo(urlToCall, cache)
+	responseData, err := getResponseFromRepo[locationAreaResponse](urlToCall, cache)
 	if err != nil {
 		return err
 	}
@@ -159,11 +204,11 @@ func commandMap(config *config, cache *pokecache.Cache) error {
 }
 
 // Checks if the resource is in the cache, if not make an api call and update the cache
-func getResponseFromRepo(url string, cache *pokecache.Cache) (locationAreaResponse, error) {
+func getResponseFromRepo[T any](url string, cache *pokecache.Cache) (T, error) {
 	// Accesses Cache
-	responseDataFromCache, found, err := findResponseFromCache(url, cache)
+	responseDataFromCache, found, err := findResponseFromCache[T](url, cache)
 	if err != nil {
-		return locationAreaResponse{}, fmt.Errorf("cached data may be corrupted. it cannot be parsed %w", err)
+		return *new(T), fmt.Errorf("cached data may be corrupted. it cannot be parsed %w", err)
 	}
 
 	if found {
@@ -171,15 +216,15 @@ func getResponseFromRepo(url string, cache *pokecache.Cache) (locationAreaRespon
 		return responseDataFromCache, nil
 	} else {
 		// Make Api Call
-		responseDataFromApi, err := makeGetApiCall[locationAreaResponse](url)
+		responseDataFromApi, err := makeGetApiCall[T](url)
 		if err != nil {
-			return locationAreaResponse{}, fmt.Errorf("error making api call %w", err)
+			return *new(T), fmt.Errorf("error making api call %w", err)
 		}
 
 		// Update cache
 		cacheBytes, err := json.Marshal(responseDataFromApi)
 		if err != nil {
-			return locationAreaResponse{}, fmt.Errorf("error marshalling network response %w", err)
+			return *new(T), fmt.Errorf("error marshalling network response %w", err)
 		}
 		cache.Add(url, cacheBytes)
 
@@ -189,18 +234,18 @@ func getResponseFromRepo(url string, cache *pokecache.Cache) (locationAreaRespon
 }
 
 // Checks if the resource already exists with the url
-func findResponseFromCache(url string, cache *pokecache.Cache) (locationAreaResponse, bool, error) {
+func findResponseFromCache[T any](url string, cache *pokecache.Cache) (T, bool, error) {
 	cachedValue, found := cache.Get(url)
 	if found {
-		var cachedResponse locationAreaResponse
+		var cachedResponse T
 		err := json.Unmarshal(cachedValue, &cachedResponse)
 		if err != nil {
-			return locationAreaResponse{}, false, fmt.Errorf("error unmarshalling cached data %w", err)
+			return *new(T), false, fmt.Errorf("error unmarshalling cached data %w", err)
 		} else {
 			return cachedResponse, found, nil
 		}
 	}
-	return locationAreaResponse{}, false, nil
+	return *new(T), false, nil
 }
 
 // Generic function to make Get API Call
@@ -223,14 +268,14 @@ func makeGetApiCall[T any](urlToCall string) (T, error) {
 }
 
 // Exit Command
-func commandExit(config *config, cache *pokecache.Cache) error {
+func commandExit(config *config, cache *pokecache.Cache, firstArg string) error {
 	fmt.Println("Closing the Pokedex... Goodbye!")
 	os.Exit(0)
 	return nil
 }
 
 // Help Command
-func commandHelp(config *config, cache *pokecache.Cache) error {
+func commandHelp(config *config, cache *pokecache.Cache, firstArg string) error {
 	helpMessage := "Welcome to the Pokedex!\nUsage:\n\n"
 
 	for key, value := range supportedCommands {
