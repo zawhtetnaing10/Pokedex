@@ -56,6 +56,11 @@ func init() {
 			Description: "Inspects pokemon",
 			Callback:    commandInspect,
 		},
+		"pokedex": {
+			Name:        "pokedex",
+			Description: "Displays all pokemon caught",
+			Callback:    commandPokedex,
+		},
 	}
 }
 
@@ -106,6 +111,16 @@ func main() {
 			}
 		}
 	}
+}
+
+// Pokedex
+func commandPokedex(config *networkresponses.Config, cache *pokecache.Cache, firstArg string, pokedex *caughtpokemon.Pokedex) error {
+	fmt.Println("Your Pokedex:")
+	for name := range pokedex.CaughtPokemon {
+		fmt.Printf("  - %v\n", name)
+	}
+
+	return nil
 }
 
 // Inspect
