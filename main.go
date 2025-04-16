@@ -4,43 +4,57 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/zawhtetnaing10/Pokedex/internal/caughtpokemon"
+	"github.com/zawhtetnaing10/Pokedex/internal/commands"
+	"github.com/zawhtetnaing10/Pokedex/internal/networkresponses"
 	"github.com/zawhtetnaing10/Pokedex/internal/pokecache"
 )
 
 // Supported commands
-var supportedCommands map[string]cliCommand
+var supportedCommands map[string]commands.CliCommand
 
 func init() {
-	supportedCommands = map[string]cliCommand{
+	supportedCommands = map[string]commands.CliCommand{
 		"exit": {
-			name:        "exit",
-			description: "Exit the Pokedex",
-			callback:    commandExit,
+			Name:        "exit",
+			Description: "Exit the Pokedex",
+			Callback:    commandExit,
 		},
 		"help": {
-			name:        "help",
-			description: "Displays a help message",
-			callback:    commandHelp,
+			Name:        "help",
+			Description: "Displays a help message",
+			Callback:    commandHelp,
 		},
 		"map": {
-			name:        "map",
-			description: "Displays location areas in Pokemon World",
-			callback:    commandMap,
+			Name:        "map",
+			Description: "Displays location areas in Pokemon World",
+			Callback:    commandMap,
 		},
 		"mapb": {
-			name:        "mapb",
-			description: "Displays previous location areas in Pokemon World",
-			callback:    commandMapBack,
+			Name:        "mapb",
+			Description: "Displays previous location areas in Pokemon World",
+			Callback:    commandMapBack,
 		},
 		"explore": {
-			name:        "explore",
-			description: "Displays pokemon in the location area",
-			callback:    commandExplore,
+			Name:        "explore",
+			Description: "Displays pokemon in the location area",
+			Callback:    commandExplore,
+		},
+		"catch": {
+			Name:        "catch",
+			Description: "Catches pokemon",
+			Callback:    commandCatch,
+		},
+		"inspect": {
+			Name:        "inspect",
+			Description: "Inspects pokemon",
+			Callback:    commandInspect,
 		},
 	}
 }
@@ -49,13 +63,16 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	// Initial Config
-	initialConfig := config{
-		next:     "",
-		previous: "",
+	initialConfig := networkresponses.Config{
+		Next:     "",
+		Previous: "",
 	}
 
 	// Cache
 	pokecache := pokecache.NewCache(5 * time.Second)
+
+	// Pokedex
+	pokedex := caughtpokemon.NewPokedex()
 
 	for {
 		fmt.Print("Pokedex >")
@@ -79,7 +96,7 @@ func main() {
 				cliCommand, ok := supportedCommands[inputCommand]
 
 				if ok {
-					err := cliCommand.callback(&initialConfig, pokecache, firstArg)
+					err := cliCommand.Callback(&initialConfig, pokecache, firstArg, pokedex)
 					if err != nil {
 						fmt.Println("Error:", err)
 					}
@@ -91,51 +108,76 @@ func main() {
 	}
 }
 
-type config struct {
-	previous string
-	next     string
+// Inspect
+func commandInspect(config *networkresponses.Config, cache *pokecache.Cache, firstArg string, pokedex *caughtpokemon.Pokedex) error {
+	caughtPokemon, ok := pokedex.CaughtPokemon[firstArg]
+	if !ok {
+		// Pokemon hasn't been caught yet
+		fmt.Printf("Cannot find %v in pokedex...\n", firstArg)
+		return nil
+	} else {
+		// Pokemon is already caught. Print out the stats
+		// Name, Height, Weight
+		fmt.Printf("Name: %v\n", caughtPokemon.Name)
+		fmt.Printf("Height: %v\n", caughtPokemon.Height)
+		fmt.Printf("Weight: %v\n", caughtPokemon.Weight)
+
+		// Stats
+		fmt.Println("Stats:")
+		fmt.Printf("  -hp: %v\n", caughtPokemon.GetStatByName("hp"))
+		fmt.Printf("  -attack: %v\n", caughtPokemon.GetStatByName("attack"))
+		fmt.Printf("  -defense: %v\n", caughtPokemon.GetStatByName("defense"))
+		fmt.Printf("  -special-attack: %v\n", caughtPokemon.GetStatByName("special-attack"))
+		fmt.Printf("  -special-defense: %v\n", caughtPokemon.GetStatByName("special-defense"))
+		fmt.Printf("  -speed: %v\n", caughtPokemon.GetStatByName("speed"))
+
+		// Types
+		fmt.Println("Types:")
+		for _, pokemonTypeName := range caughtPokemon.GetTypes() {
+			fmt.Printf("  - %v\n", pokemonTypeName)
+		}
+
+		return nil
+	}
 }
 
-type cliCommand struct {
-	name        string
-	description string
-	callback    func(config *config, cache *pokecache.Cache, firstArg string) error
+// Catch command
+func commandCatch(config *networkresponses.Config, cache *pokecache.Cache, firstArg string, pokedex *caughtpokemon.Pokedex) error {
+	fmt.Printf("Throwing a Pokeball at %v...\n", firstArg)
+
+	pokemonUrl := BaseUrl + EndpointPokemon + "/" + firstArg
+
+	pokemon, err := getResponseFromRepo[networkresponses.Pokemon](pokemonUrl, cache)
+	if err != nil {
+		return err
+	}
+
+	if calculateChanceToCatch(pokemon.BaseExperience) {
+		// Pokemon caught
+		pokedex.Add(pokemon.Name, pokemon)
+		fmt.Printf("%v was caught!\n", pokemon.Name)
+	} else {
+		// Pokemon Escaped
+		fmt.Printf("%v escaped!\n", pokemon.Name)
+	}
+	return nil
 }
 
-type locationAreaResponse struct {
-	Count    int                `json:"count"`
-	Next     string             `json:"next"`
-	Previous string             `json:"previous"`
-	Results  []locationAreaData `json:"results"`
-}
+// Calculates the chance for success
+func calculateChanceToCatch(baseExperience int) bool {
+	randomValue := rand.Intn(MaxCatchThreshold)
 
-type locationAreaData struct {
-	Name string `json:"name"`
-	Url  string `json:"url"`
-}
-
-type locationAreaWithPokemon struct {
-	PokemonEncounters []pokemonEncounters `json:"pokemon_encounters"`
-}
-
-type pokemonEncounters struct {
-	Pokemon pokemon `json:"pokemon"`
-}
-
-type pokemon struct {
-	Name           string `json:"name"`
-	Url            string `json:"url"`
-	BaseExperience int    `json:"base_experience"`
+	return randomValue >= baseExperience && randomValue < MaxCatchThreshold
 }
 
 // Explore command
-func commandExplore(config *config, cache *pokecache.Cache, firstArg string) error {
+func commandExplore(config *networkresponses.Config, cache *pokecache.Cache, firstArg string, pokedex *caughtpokemon.Pokedex) error {
 	fmt.Printf("Exploring %v...\n", firstArg)
 	fmt.Println("Found Pokemon:")
 
 	fullPokemonListUrl := BaseUrl + EndpointLocationArea + "/" + firstArg
 
-	response, err := getResponseFromRepo[locationAreaWithPokemon](fullPokemonListUrl, cache)
+	response, err := getResponseFromRepo[networkresponses.LocationAreaWithPokemon](fullPokemonListUrl, cache)
 	if err != nil {
 		return err
 	}
@@ -148,20 +190,20 @@ func commandExplore(config *config, cache *pokecache.Cache, firstArg string) err
 }
 
 // Map back command
-func commandMapBack(config *config, cache *pokecache.Cache, firstArg string) error {
-	if config.previous == "" {
+func commandMapBack(config *networkresponses.Config, cache *pokecache.Cache, firstArg string, pokedex *caughtpokemon.Pokedex) error {
+	if config.Previous == "" {
 		fmt.Println("You are on the first page")
 		return nil
 	} else {
 		// Make Api Call
-		responseData, err := getResponseFromRepo[locationAreaResponse](config.previous, cache)
+		responseData, err := getResponseFromRepo[networkresponses.LocationAreaResponse](config.Previous, cache)
 		if err != nil {
 			return err
 		}
 
 		// Update next and previous
-		config.next = responseData.Next
-		config.previous = responseData.Previous
+		config.Next = responseData.Next
+		config.Previous = responseData.Previous
 
 		// Print out the results
 		for _, locationArea := range responseData.Results {
@@ -173,27 +215,27 @@ func commandMapBack(config *config, cache *pokecache.Cache, firstArg string) err
 }
 
 // Map Command
-func commandMap(config *config, cache *pokecache.Cache, firstArg string) error {
+func commandMap(config *networkresponses.Config, cache *pokecache.Cache, firstArg string, pokedex *caughtpokemon.Pokedex) error {
 	fullLocationAreaUrl := BaseUrl + EndpointLocationArea
 
 	var urlToCall string
-	if config.previous == "" && config.next == "" {
+	if config.Previous == "" && config.Next == "" {
 		// Initial Condition
 		urlToCall = fullLocationAreaUrl
-	} else if config.next != "" {
+	} else if config.Next != "" {
 		/// After first page has been displayed
-		urlToCall = config.next
+		urlToCall = config.Next
 	}
 
 	// Get from cache or from api.
-	responseData, err := getResponseFromRepo[locationAreaResponse](urlToCall, cache)
+	responseData, err := getResponseFromRepo[networkresponses.LocationAreaResponse](urlToCall, cache)
 	if err != nil {
 		return err
 	}
 
 	// Update next and previous
-	config.next = responseData.Next
-	config.previous = responseData.Previous
+	config.Next = responseData.Next
+	config.Previous = responseData.Previous
 
 	// Print out the results
 	for _, locationArea := range responseData.Results {
@@ -268,18 +310,18 @@ func makeGetApiCall[T any](urlToCall string) (T, error) {
 }
 
 // Exit Command
-func commandExit(config *config, cache *pokecache.Cache, firstArg string) error {
+func commandExit(config *networkresponses.Config, cache *pokecache.Cache, firstArg string, pokedex *caughtpokemon.Pokedex) error {
 	fmt.Println("Closing the Pokedex... Goodbye!")
 	os.Exit(0)
 	return nil
 }
 
 // Help Command
-func commandHelp(config *config, cache *pokecache.Cache, firstArg string) error {
+func commandHelp(config *networkresponses.Config, cache *pokecache.Cache, firstArg string, pokedex *caughtpokemon.Pokedex) error {
 	helpMessage := "Welcome to the Pokedex!\nUsage:\n\n"
 
 	for key, value := range supportedCommands {
-		messageToAdd := fmt.Sprintf("%s: %s\n", key, value.description)
+		messageToAdd := fmt.Sprintf("%s: %s\n", key, value.Description)
 		helpMessage += messageToAdd
 	}
 	fmt.Println(helpMessage)
